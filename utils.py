@@ -1,7 +1,8 @@
 import torch
 
-#torchvision ema implementation
-#https://github.com/pytorch/vision/blob/main/references/classification/utils.py#L159
+
+# torchvision ema implementation
+# https://github.com/pytorch/vision/blob/main/references/classification/utils.py#L159
 class ExponentialMovingAverage(torch.optim.swa_utils.AveragedModel):
     """Maintains moving averages of model parameters using an exponential decay.
     ``ema_avg = decay * avg_model_param + (1 - decay) * model_param``
