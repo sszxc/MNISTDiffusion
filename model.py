@@ -5,6 +5,8 @@ from unet import Unet
 from tqdm import tqdm
 
 
+torch.set_printoptions(precision=3, sci_mode=False)
+
 class MNISTDiffusion(nn.Module):
     def __init__(
         self,
@@ -46,12 +48,60 @@ class MNISTDiffusion(nn.Module):
         return pred_noise
 
     @torch.no_grad()
-    def sampling(self, n_samples, clipped_reverse_diffusion=True, device="cuda"):
-        x_t = torch.randn(
-            (n_samples, self.in_channels, self.image_size, self.image_size)
-        ).to(device)
+    def sampling(
+        self,
+        n_samples,
+        clipped_reverse_diffusion=True,
+        device="cuda",
+        initial_noise=None,
+        step_noises=None,
+        return_frames=False,
+        save_every_steps=50,
+    ):
+        if initial_noise is not None:
+            x_t = initial_noise.to(device)
+            if x_t.shape[0] != n_samples or x_t.shape[1:] != (
+                self.in_channels,
+                self.image_size,
+                self.image_size,
+            ):
+                raise ValueError(
+                    f"initial_noise shape {x_t.shape} does not match "
+                    f"(n_samples={n_samples}, in_channels={self.in_channels}, "
+                    f"image_size={self.image_size})"
+                )
+        else:
+            x_t = torch.randn(
+                (n_samples, self.in_channels, self.image_size, self.image_size)
+            ).to(device)
+        
+        # Validate step_noises if provided
+        if step_noises is not None:
+            expected_shape = (
+                self.timesteps,
+                n_samples,
+                self.in_channels,
+                self.image_size,
+                self.image_size,
+            )
+            if step_noises.shape != expected_shape:
+                raise ValueError(
+                    f"step_noises shape {step_noises.shape} does not match "
+                    f"expected {expected_shape}"
+                )
+            step_noises = step_noises.to(device)
+        
+        frames = [] if return_frames else None
+        if return_frames:
+            frames.append(((x_t + 1.0) / 2.0).clone().cpu())
+        
         for i in tqdm(range(self.timesteps - 1, -1, -1), desc="Sampling"):
-            noise = torch.randn_like(x_t).to(device)
+            if step_noises is not None:
+                # Use pre-generated noise for this step
+                noise = step_noises[i]
+            else:
+                # Generate random noise for this step (original behavior)
+                noise = torch.randn_like(x_t).to(device)
             t = torch.tensor([i for _ in range(n_samples)]).to(device)
 
             if clipped_reverse_diffusion:
@@ -59,8 +109,13 @@ class MNISTDiffusion(nn.Module):
             else:
                 x_t = self._reverse_diffusion(x_t, t, noise)
 
+            if return_frames and (self.timesteps - 1 - i) % save_every_steps == 0:
+                frames.append(((x_t + 1.0) / 2.0).clone().cpu())
+        
         x_t = (x_t + 1.0) / 2.0  # [-1,1] to [0,1]
-
+        if return_frames:
+            frames.append(x_t.clone().cpu())
+            return x_t, frames
         return x_t
 
     def _cosine_variance_schedule(self, timesteps, epsilon=0.008):

@@ -21,3 +21,10 @@ The Denoising Diffusion Probabilistic Models paper: https://arxiv.org/pdf/2006.1
 
 A pytorch version of DDPM: https://github.com/lucidrains/denoising-diffusion-pytorch
 
+## Playing
+- [x] [理解 Stable Diffusion UNet 网络 « bang's blog](https://blog.cnbang.net/tech/3823/)
+- [x] test 的时候使用使用同样的初始噪声
+- [x] 可视化加噪过程
+- [x] 保存训练相关的参数到 result 文件夹
+- [ ] 比较不同的网络尺寸
+- [ ] 条件生成 (Extra): 尝试加入类别标签（Digit Label），实现 Classifier-Free Guidance (CFG)，让模型能根据你的指令生成特定的数字
