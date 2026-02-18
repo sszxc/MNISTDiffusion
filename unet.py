@@ -168,7 +168,8 @@ class DecoderBlock(nn.Module):
 
 class Unet(nn.Module):
     """
-    simple unet design without attention
+    simple unet design without attention.
+    Optional class conditioning: num_classes = 10 digits + 1 null (for CFG), so 11.
     """
 
     def __init__(
@@ -179,15 +180,21 @@ class Unet(nn.Module):
         out_channels=2,
         base_dim=32,
         dim_mults=[2, 4, 8, 16],
+        num_classes=None,
     ):
         super().__init__()
         assert isinstance(dim_mults, (list, tuple))
         assert base_dim % 2 == 0
 
+        self.num_classes = num_classes  # 11 = 10 digits + 1 null for classifier-free guidance
         channels = self._cal_channels(base_dim, dim_mults)
 
         self.init_conv = ConvBnSiLu(in_channels, base_dim, 3, 1, 1)
         self.time_embedding = nn.Embedding(timesteps, time_embedding_dim)
+        if num_classes is not None:
+            self.class_embedding = nn.Embedding(num_classes, time_embedding_dim)
+        else:
+            self.class_embedding = None
 
         self.encoder_blocks = nn.ModuleList(
             [EncoderBlock(c[0], c[1], time_embedding_dim) for c in channels]
@@ -205,10 +212,13 @@ class Unet(nn.Module):
             in_channels=channels[0][0] // 2, out_channels=out_channels, kernel_size=1
         )
 
-    def forward(self, x, t=None):
+    def forward(self, x, t=None, y=None):
         x = self.init_conv(x)
         if t is not None:
-            t = self.time_embedding(t)
+            t_emb = self.time_embedding(t)
+            if self.class_embedding is not None and y is not None:
+                t_emb = t_emb + self.class_embedding(y)
+            t = t_emb
         encoder_shortcuts = []
         for encoder_block in self.encoder_blocks:
             x, x_shortcut = encoder_block(x, t)

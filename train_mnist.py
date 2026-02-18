@@ -16,7 +16,7 @@ import numpy as np
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.utils.tensorboard import SummaryWriter
-from model import MNISTDiffusion
+from model import MNISTDiffusion, NUM_DIGIT_CLASSES
 from utils import ExponentialMovingAverage
 
 
@@ -102,6 +102,30 @@ def parse_args():
         default=50,
         help="when saving denoising GIF, sample a frame every this many steps (default 50 -> ~20 frames for 1000 steps)",
     )
+    # 条件生成 (Classifier-Free Guidance)
+    parser.add_argument(
+        "--conditional",
+        action="store_true",
+        help="train/sample with digit class labels for conditional generation and CFG",
+    )
+    parser.add_argument(
+        "--class_dropout_prob",
+        type=float,
+        default=0.1,
+        help="probability of dropping class label during training (for CFG); only used when --conditional",
+    )
+    parser.add_argument(
+        "--labels",
+        type=str,
+        default="",
+        help="comma-separated digit labels for sampling (e.g. '3' or '0,1,2,3,4,5'); length must match n_samples when not single digit",
+    )
+    parser.add_argument(
+        "--cfg_scale",
+        type=float,
+        default=0.0,
+        help="Classifier-Free Guidance scale at sampling; 0=no CFG, try 2.0~3.0 when --conditional",
+    )
 
     args = parser.parse_args()
     return args
@@ -169,11 +193,15 @@ def save_train_config(exp_dir, args, model):
             "dim_mults": [2, 4],
             "timesteps": args.timesteps,
             "num_params": sum(p.numel() for p in model.parameters()),
+            "conditional": getattr(args, "conditional", False),
+            "num_classes": NUM_DIGIT_CLASSES if getattr(args, "conditional", False) else None,
+            "class_dropout_prob": getattr(args, "class_dropout_prob", 0.1),
         },
         "sampling": {
             "n_samples": args.n_samples,
             "fixed_step_noises": args.fixed_step_noises,
             "step_noises_path": args.step_noises if args.step_noises else None,
+            "cfg_scale": getattr(args, "cfg_scale", 0.0),
         },
         "resume": {
             "ckpt": args.ckpt if args.ckpt else None,
@@ -207,6 +235,8 @@ def main(args):
         in_channels=1,
         base_dim=args.model_base_dim,
         dim_mults=[2, 4],
+        num_classes=NUM_DIGIT_CLASSES if args.conditional else None,
+        class_dropout_prob=args.class_dropout_prob if args.conditional else 0.1,
     ).to(device)
     save_train_config(exp_dir, args, model)
     logger.info("Saved train config to %s", os.path.join(exp_dir, "config.json"))
@@ -228,7 +258,7 @@ def main(args):
     )
     loss_fn = nn.MSELoss(reduction="mean")
 
-    # load checkpoint
+    # load checkpoint (须与训练时一致使用 --conditional，否则结构不匹配)
     if args.ckpt:
         ckpt = torch.load(args.ckpt, map_location=device)
         model_ema.load_state_dict(ckpt["model_ema"])
@@ -256,7 +286,8 @@ def main(args):
             for j, (image, target) in enumerate(train_dataloader):
                 noise = torch.randn_like(image).to(device)
                 image = image.to(device)
-                pred = model(image, noise)
+                target = target.to(device) if args.conditional else None
+                pred = model(image, noise, y=target)
                 loss = loss_fn(pred, noise)
                 loss.backward()
                 optimizer.step()
@@ -307,6 +338,20 @@ def main(args):
                 torch.save(step_noises.cpu(), step_noises_path)
                 logger.info("Saved step noise sequence to %s", step_noises_path)
             
+            # 解析采样时的类别标签与 CFG
+            sampling_labels = None
+            if args.conditional and args.labels.strip():
+                parts = [p.strip() for p in args.labels.split(",") if p.strip()]
+                if len(parts) == 1:
+                    sampling_labels = int(parts[0])
+                else:
+                    if len(parts) != args.n_samples:
+                        raise ValueError(
+                            f"--labels 有 {len(parts)} 个值，需等于 --n_samples ({args.n_samples})"
+                        )
+                    sampling_labels = [int(p) for p in parts]
+            cfg_scale = args.cfg_scale if args.conditional else 0.0
+
             nrow = int(math.sqrt(args.n_samples))
             samples, frames = model_ema.module.sampling(
                 args.n_samples,
@@ -316,6 +361,8 @@ def main(args):
                 step_noises=step_noises if args.fixed_step_noises else None,
                 return_frames=True,
                 save_every_steps=args.gif_every_steps,
+                labels=sampling_labels,
+                cfg_scale=cfg_scale,
             )
             save_image(
                 samples,
